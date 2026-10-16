@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import { derive, seal, unseal, salt } from '../app/crypto.ts';
+const s = salt(), k = await derive('test-only-long-passphrase', s);
+const notes = [{id:'one',title:'Private title',text:'Private content \u{1f33f}'}];
+const p = await seal(notes,k,s);
+assert.deepEqual(await unseal(p,k),notes);
+assert.equal(JSON.stringify(p).includes('Private'),false);
+const wrong = await derive('a-different-long-password',s);
+await assert.rejects(() => unseal(p,wrong));
+const altered = {...p,data:(p.data[0]==='A'?'B':'A')+p.data.slice(1)};
+await assert.rejects(() => unseal(altered,k));
+const second = await seal(notes,k,s);
+assert.notEqual(second.iv,p.iv);
+assert.deepEqual(await unseal(JSON.parse(JSON.stringify(p)),k),notes);
+console.log('PASS: round trip, no plaintext in envelope, wrong password, tampering, unique IVs, backup round trip.');

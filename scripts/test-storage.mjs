@@ -1,0 +1,16 @@
+import {DatabaseSync} from 'node:sqlite';
+import {readFileSync} from 'node:fs';
+import assert from 'node:assert/strict';
+const db = new DatabaseSync(':memory:');
+db.exec(readFileSync('drizzle/0000_left_mockingbird.sql','utf8'));
+const create = db.prepare('INSERT INTO vaults(owner,payload,version) VALUES(?,?,1) ON CONFLICT DO NOTHING RETURNING version');
+const save = db.prepare('UPDATE vaults SET payload=?, version=? WHERE owner=? AND version=? RETURNING version');
+assert.equal(create.get('alice','encrypted A').version,1);
+assert.equal(create.get('alice','replacement'),undefined);
+assert.equal(save.get('encrypted B',2,'alice',1).version,2);
+assert.equal(save.get('stale write',2,'alice',1),undefined);
+assert.equal(save.get('other owner',3,'bob',2),undefined);
+assert.equal(db.prepare('SELECT payload FROM vaults WHERE owner=?').get('alice').payload,'encrypted B');
+assert.equal(db.prepare('SELECT payload FROM vaults WHERE owner=?').get('bob'),undefined);
+console.log('PASS: initial-create collision, atomic stale-save rejection, owner isolation.');
+db.close();
