@@ -1,0 +1,17 @@
+import fs from 'node:fs';
+import {generateSQLiteDrizzleJson,generateSQLiteMigration} from 'drizzle-kit/api';
+import * as schema from '../db/schema.ts';
+const target='drizzle/0001_cloud_sync_metadata.sql';
+if(fs.existsSync(target)) throw new Error('Migration already exists; never rewrite applied migrations.');
+const previous=JSON.parse(fs.readFileSync('drizzle/meta/0000_snapshot.json','utf8'));
+const next=await generateSQLiteDrizzleJson(schema,previous.id);
+const renamed=structuredClone(previous);
+renamed.tables.legacy_vaults={...renamed.tables.vaults,name:'legacy_vaults'};
+delete renamed.tables.vaults;
+const statements=await generateSQLiteMigration(renamed,next);
+fs.writeFileSync(target,['ALTER TABLE `vaults` RENAME TO `legacy_vaults`;',...statements].join('\n--> statement-breakpoint\n'));
+fs.writeFileSync('drizzle/meta/0001_snapshot.json',JSON.stringify(next,null,2));
+const journal=JSON.parse(fs.readFileSync('drizzle/meta/_journal.json','utf8'));
+journal.entries.push({idx:1,version:'6',when:Date.now(),tag:'0001_cloud_sync_metadata',breakpoints:true});
+fs.writeFileSync('drizzle/meta/_journal.json',JSON.stringify(journal,null,2));
+console.log('Generated non-destructive cloud sync migration with Drizzle.');

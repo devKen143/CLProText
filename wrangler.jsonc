@@ -1,0 +1,18 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clprotext",
+  "main": "dist/server/index.js",
+  "compatibility_date": "2026-05-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": { "directory": "dist/client" },
+  "no_bundle": true,
+  "find_additional_modules": true,
+  "rules": [{ "type": "ESModule", "globs": ["**/*.js", "**/*.mjs"] }],
+  "d1_databases": [{
+    "binding": "DB",
+    "database_name": "clprotext",
+    "database_id": "35f5d0c4-8276-43f2-9185-d81cab50a021",
+    "migrations_dir": "drizzle"
+  }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "clprotext-vaults" }]
+}

@@ -224,3 +224,29 @@ export async function migrateLegacyLocalStorage(username: string, password: stri
   // Migration is deliberately non-destructive: the legacy key remains available for rollback.
   return true;
 }
+
+// Save the entire working copy atomically. In particular, deleted notes must not
+// survive in IndexedDB and reappear on the next unlock or cloud snapshot.
+export async function replaceNotebook(username: string, password: string, notes: import('./crypto').Note[]) {
+  const {key,header} = await keyFor(username,password);
+  const noteRecords: EncryptedRecord[] = [], attachmentRecords: Array<EncryptedRecord & {name:string;type:string;size:number}> = [];
+  for (const note of notes) {
+    const attachmentIds: string[] = [];
+    for(const attachment of note.attachments || []) {
+      const comma=attachment.dataUrl.indexOf(',');
+      if(comma<0) throw new Error('Invalid attachment.');
+      const data=decodeBase64(attachment.dataUrl.slice(comma+1));
+      if(data.length>5*1024*1024) throw new Error('Attachments must be 5 MB or smaller.');
+      attachmentRecords.push({...await sealRecord(data,key,attachment.id),name:attachment.name,type:attachment.type,size:attachment.size});
+      attachmentIds.push(attachment.id);
+    }
+    noteRecords.push(await sealRecord(enc.encode(JSON.stringify({id:note.id,title:note.title,text:note.text,attachmentIds})),key,note.id));
+  }
+  const db=await openDatabase(username);
+  try { await tx(db,['header','notes','attachments'],'readwrite',t=> {
+    t.objectStore('notes').clear(); t.objectStore('attachments').clear();
+    noteRecords.forEach(record=>t.objectStore('notes').put(record));
+    attachmentRecords.forEach(record=>t.objectStore('attachments').put(record));
+    t.objectStore('header').put({...header,updatedAt:now()},HEADER_KEY);
+  }); } finally { db.close(); }
+}

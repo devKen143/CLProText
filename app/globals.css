@@ -35,3 +35,4 @@
 .change-password{background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:18px 20px;margin:14px 20px 0}
 .change-password input{width:100%;border:1px solid var(--line);border-radius:6px;padding:10px 12px}
 .change-actions{display:flex;gap:10px;margin-top:14px}
+.cloud-sync{border-top:1px solid var(--line);padding:14px 0;font-size:11px;color:var(--muted)}.cloud-sync label{display:flex;align-items:center;gap:8px;color:var(--text)}.cloud-sync input{width:auto}.cloud-sync p{line-height:1.6;margin:8px 0}.cloud-sync button{display:flex;text-align:left;font-size:11px}.cloud-sync [role=status]{text-transform:capitalize;color:var(--green)}

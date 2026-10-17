@@ -1,14 +1,13 @@
 import vinext from "vinext";
 import { defineConfig } from "vite";
-import hostingConfig from "./.openai/hosting.json";
+import { readFileSync, existsSync } from 'node:fs';
 import { readExecutionProfile } from "./scripts/execution-profile.mjs";
 import { sites } from "./build/sites-vite-plugin";
 import { connectorPreview } from "./build/connector-preview-plugin.mjs";
 
-const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
-  "00000000-0000-4000-8000-000000000000";
-
+const hostingConfig = existsSync('.openai/hosting.json') ? JSON.parse(readFileSync('.openai/hosting.json','utf8').replace(/^\uFEFF/,'')) : {d1:'DB',r2:'BUCKET'};
 const { d1, r2 } = hostingConfig;
+const cloudConfig = JSON.parse(readFileSync('wrangler.jsonc','utf8').split('\n').filter(line=>!line.trim().startsWith('//')).join('\n'));
 
 // macOS Seatbelt blocks FSEvents, so Codex previews need polling for HMR.
 const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
@@ -16,13 +15,13 @@ const managedLinux = readExecutionProfile() === "managed-linux";
 
 const localBindingConfig = {
   main: "./build/sites-worker.ts",
-  compatibility_flags: ["nodejs_compat"],
   d1_databases: d1
     ? [
         {
           binding: d1,
-          database_name: "site-creator-d1",
-          database_id: SITE_CREATOR_PLACEHOLDER_DATABASE_ID,
+          database_name: "clprotext",
+          database_id: cloudConfig.d1_databases[0].database_id,
+          migrations_dir: 'drizzle',
         },
       ]
     : [],
@@ -30,7 +29,7 @@ const localBindingConfig = {
     ? [
         {
           binding: r2,
-          bucket_name: "site-creator-r2",
+          bucket_name: "clprotext-vaults",
         },
       ]
     : [],
