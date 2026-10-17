@@ -67,7 +67,7 @@ export default defineConfig(async ({ command }) => {
         viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },
         inspectorPort: false,
         config: {
-          ...localBindingConfig,
+          ...(command === "serve" ? localBindingConfig : {}),
           ...(command === "serve"
             ? {
                 services: [
