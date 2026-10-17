@@ -12,10 +12,17 @@
 .username-form>div{display:flex;gap:8px}
 .username-form input{flex:1}
 .username-form button{padding:0 16px}
+.welcome:has(.username-form)>.unlock-card{width:min(420px,calc(100vw - 40px));padding:28px 30px}
+.welcome:has(.username-form) .username-form{padding:0;margin:0;border:0}
+.welcome:has(.username-form) .username-form>div{gap:10px}
+.welcome:has(.username-form) .username-form input,
+.welcome:has(.username-form) .username-form button{height:48px}
+.welcome:has(.username-form) .username-form button{flex:0 0 108px}
 .welcome:has(.username-form){align-items:center;padding-top:0}
 .welcome:has(.username-form)>.unlock-card{border-radius:0}
 .welcome:has(.username-form)>.unlock-card{align-self:center}
 .username-form input,.username-form button{border-radius:0}
+@media(max-width:520px){.welcome:has(.username-form)>.unlock-card{padding:24px}.welcome:has(.username-form) .username-form>div{flex-direction:column}.welcome:has(.username-form) .username-form button{flex-basis:auto;width:100%}}
 .paper{padding-top:24px}
 .attachment-tools{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:14px}
 .attachment-tools span{font-size:10px;color:var(--muted)}
