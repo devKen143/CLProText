@@ -22,23 +22,6 @@ export default function Home({ notebookUsername = '' }: { notebookUsername?: str
  const cloud = useCloudSync({username:selectedUsername,notes,password:()=>currentPassword.current,unlocked,dirty,busy,
   replace:async(items)=> { await persist(items,currentPassword.current); setNotes(items); setActive(items[0].id); }
  });
- async function openFromCloud() {
-  if(!password || !selectedUsername) {setError('Enter the username and cloud notebook password first.');return;}
-  if(exists && !window.confirm('Replace this device notebook with the cloud copy? Unlock and export a backup first to keep local notes.')) return;
-  setBusy(true);setError('');
-  try {
-   const items=await cloud.download(password);
-   let header=await readHeader(selectedUsername);
-   if(!header) header=await createVault(selectedUsername,password);
-   else {
-    // Verify the existing local password before replacing any records.
-    await listNotes(selectedUsername,password);
-   }
-   await persist(items,password);
-   currentPassword.current=password;currentSalt.current=header.salt;key.current=await derive(password,header.salt);
-   setNotes(items);setActive(items[0].id);setPassword('');setConfirm('');
-  } catch(e) {setError((e as Error).message || 'Could not open cloud notebook. Check the password.');} finally {setBusy(false);}
- }
  const passwordStrength = (value: string) => {
   if (!value) return { score: 0, label: 'Enter a password' };
   const common = ['password', '12345678', 'qwerty', 'letmein', 'welcome', 'admin', 'notebook'];
