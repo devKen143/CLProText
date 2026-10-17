@@ -11,7 +11,7 @@
   "d1_databases": [{
     "binding": "DB",
     "database_name": "clprotext",
-    "database_id": "35f5d0c4-8276-43f2-9185-d81cab50a021",
+    "database_id": "17580853-fc38-4a49-b6c6-8c00b1ee7cdc",
     "migrations_dir": "drizzle"
   }],
   "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "clprotext-vaults" }]
