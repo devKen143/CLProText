@@ -1,4 +1,11 @@
 ﻿# CLProText
+P0 cross-device login update: new devices check the cloud before offering creation,
+decrypt existing snapshots on unlock, and claim new cloud notebooks via POST before
+creating local storage. Save changes uploads with the observed version. Apply
+migration 0002 before deploying. See [cloud recovery](docs/cloud-recovery.md) for
+legacy names, orphan auditing, and remaining P1 work. The optional-sync UI
+instructions below describe the older implementation, not the current page.
+
 Local-first, browser-encrypted notebooks at /username with optional Cloudflare D1 + R2 sync.
 
 ## Local use

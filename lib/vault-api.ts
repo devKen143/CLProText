@@ -1,4 +1,4 @@
-import { MAX_BLOB_BYTES, MAX_REQUEST_BYTES, validBlob, validUsername } from './sync-contract';
+import { MAX_BLOB_BYTES, MAX_REQUEST_BYTES, normalizeUsername, validBlob, validUsername } from './sync-contract';
 import { timingSafeEqual } from 'node:crypto';
 export type VaultRow = { username: string; writeTokenHash: string; version: number; blobKey: string; sizeBytes: number; createdAt: number; updatedAt: number };
 export interface VaultRepository {
@@ -30,21 +30,26 @@ export function createVaultHandler(dependencies: () => ApiDeps | null) {
       if (deps.rateLimit && !await deps.rateLimit(request)) return response({error:'Too many requests. Try later.'},429);
       const {repository,blobs} = deps;
       if (request.method === 'GET') {
-        const username = new URL(request.url).searchParams.get('username');
+        const url = new URL(request.url);
+        const username = normalizeUsername(url.searchParams.get('username') || '');
         if (!validUsername(username)) return response({error:'Invalid username.'},400);
         for(let attempt=0;attempt<2;attempt++) {
           const row = await repository.get(username); if (!row) return response({error:'Notebook not found.'},404);
+          if (url.searchParams.get('exists') === '1') return response({exists:true,version:row.version});
           const blob = await blobs.get(row.blobKey);
-          if (blob !== null) return response({blob:JSON.parse(blob),version:row.version});
+          if (blob !== null) return response({blob:JSON.parse(blob),version:row.version,cryptoUsername:row.username});
         }
         return response({error:'Cloud snapshot temporarily unavailable. Retry later.'},503);
       }
-      if (!['PUT','DELETE'].includes(request.method)) return response({error:'Method not allowed.'},405);
+      if (!['POST','PUT','DELETE'].includes(request.method)) return response({error:'Method not allowed.'},405);
       const origin = request.headers.get('origin');
       if (origin && origin !== new URL(request.url).origin) return response({error:'Cross-origin write rejected.'},403);
       const body = await readBody(request);
+      if (typeof body.username === 'string') body.username = normalizeUsername(body.username);
       if (!validUsername(body.username) || typeof body.writeToken !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(body.writeToken) || !Number.isSafeInteger(body.expectedVersion) || body.expectedVersion < 0) return response({error:'Invalid username, token or version.'},400);
       const current = await repository.get(body.username), tokenHash = await hashToken(body.writeToken);
+      if (current && (request.method === 'POST' || body.expectedVersion === 0)) return response({error:'Notebook already exists.',version:current.version},409);
+      if (request.method === 'POST' && body.expectedVersion !== 0) return response({error:'Creation requires version zero.'},400);
       if (current && !equalHash(current.writeTokenHash,tokenHash)) return response({error:'Incorrect write token. Check the notebook password.'},403);
       if ((current?.version || 0) !== body.expectedVersion) return response({error:'Cloud version changed.',version:current?.version || 0},409);
       if (request.method === 'DELETE') {
@@ -57,13 +62,22 @@ export function createVaultHandler(dependencies: () => ApiDeps | null) {
       const serialized = JSON.stringify(body.blob), sizeBytes = encoder.encode(serialized).byteLength;
       if(sizeBytes > MAX_BLOB_BYTES) return response({error:'Encrypted blob exceeds 8 MiB.'},413);
       const now = Date.now(), blobKey = `vaults/${body.username}/${crypto.randomUUID()}`;
-      const next: VaultRow = {username:body.username,writeTokenHash:tokenHash,version:(current?.version || 0)+1,blobKey,sizeBytes,createdAt:current?.createdAt || now,updatedAt:now};
+      const next: VaultRow = {username:current?.username || body.username,writeTokenHash:tokenHash,version:(current?.version || 0)+1,blobKey,sizeBytes,createdAt:current?.createdAt || now,updatedAt:now};
       await blobs.put(blobKey,serialized);
       // Immutable R2 blobs plus a D1 compare-and-swap prevent a losing write corrupting the winner.
       // On an ambiguous D1 failure retain the blob: deleting it might delete a committed snapshot.
-      const accepted = current ? await repository.update(current,next) : await repository.create(next);
+      let accepted: boolean;
+      try { accepted = current ? await repository.update(current,next) : await repository.create(next); }
+      catch (error) {
+        // Reconcile a lost commit response before attempting compensation.
+        // If D1 is unavailable too, retain ciphertext for the read-only orphan audit.
+        const committed = await repository.get(body.username);
+        if (committed?.blobKey === blobKey) return response({version:committed.version},current ? 200 : 201);
+        await blobs.delete(blobKey);
+        throw error;
+      }
       if(!accepted) { await blobs.delete(blobKey).catch(()=>{}); return response({error:'Cloud version changed.',version:(await repository.get(body.username))?.version || 0},409); }
-      if(current) await blobs.delete(current.blobKey).catch(()=>{});
+      // Preserve existing snapshots for recovery; never rewrite/delete prior R2 objects here.
       return response({version:next.version},current ? 200 : 201);
     } catch(e) { return response({error:e instanceof HttpError ? e.message : 'Cloud storage unavailable. Local notes are safe.'},e instanceof HttpError ? e.status : 503); }
   };

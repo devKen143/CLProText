@@ -15,6 +15,13 @@
       "when": 1792209414021,
       "tag": "0001_cloud_sync_metadata",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1792972800000,
+      "tag": "0002_canonical_usernames",
+      "breakpoints": true
     }
   ]
 }

@@ -1,9 +1,9 @@
-import { derive, salt, encryptBytes, decryptBytes, encodeBase64, type Note } from './crypto';
-import { MAX_BLOB_BYTES, validBlob, validUsername, type CloudBlob } from '../lib/sync-contract';
+import { derive, salt, encryptBytes, decryptBytes, encodeBase64, unseal, type Envelope, type Note } from './crypto';
+import { MAX_BLOB_BYTES, normalizeUsername, validBlob, validUsername, type CloudBlob } from '../lib/sync-contract';
 const encoder = new TextEncoder();
 export const WRITE_TOKEN_CONTEXT = 'CLProText:write-token:v1:';
 export async function deriveWriteToken(password: string, username: string) {
-  if (!validUsername(username)) throw new Error('Invalid username.');
+  if (!validUsername(normalizeUsername(username))) throw new Error('Invalid username.');
   const material = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
   const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', iterations: 600000, salt: encoder.encode(WRITE_TOKEN_CONTEXT + username) }, material, 256);
   return encodeBase64(new Uint8Array(bits));
@@ -16,7 +16,8 @@ export async function sealCloud(notes: Note[], password: string, username: strin
   if (encoder.encode(JSON.stringify(blob)).byteLength > MAX_BLOB_BYTES) throw new Error('Cloud snapshot exceeds 8 MiB. Local notes are safe; remove attachments or export a backup.');
   return blob;
 }
-export async function openCloud(blob: CloudBlob, password: string, username: string): Promise<Note[]> {
+export async function openCloud(blob: CloudBlob | Envelope, password: string, username: string): Promise<Note[]> {
+  if (blob.format === 1) return unseal(blob,await derive(password,blob.salt,blob.iterations));
   if (!validBlob(blob)) throw new Error('Invalid cloud notebook.');
   const key = await derive(password, blob.salt);
   const packed = await decryptBytes(blob, key, `cloud:v2:${username}`);

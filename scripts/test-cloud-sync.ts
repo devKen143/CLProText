@@ -55,7 +55,7 @@ assert.equal((await call('PUT',{...body,expectedVersion:1,writeToken:'A'.repeat(
 const updates=await Promise.all([call('PUT',{...body,expectedVersion:1}),call('PUT',{...body,expectedVersion:1})]);
 assert.deepEqual(updates.map(r=>r.status).sort(),[200,409]);
 const conflict=await call('PUT',{...body,expectedVersion:1});assert.equal(conflict.status,409);assert.equal((await conflict.json() as {version:number}).version,2);
-assert.equal(objects.size,1);assert(objects.has(rows.get('alice')!.blobKey));
+assert.equal(objects.size,2);assert(objects.has(rows.get('alice')!.blobKey));
 assert.equal((await call('PUT',{...body,expectedVersion:2,blob:{...blob,data:'A'.repeat(MAX_BLOB_BYTES)}})).status,413);
 assert.equal((await call('PUT',{...body,expectedVersion:2,blob:{...blob,plaintext:'no'}})).status,400);
 assert.equal((await call('PUT',{...body,expectedVersion:2.5})).status,400);
@@ -67,7 +67,7 @@ const fetched=await call('GET');assert.equal(fetched.status,200);assert.deepEqua
 assert.equal((await call('DELETE',{...body,expectedVersion:2,writeToken:'B'.repeat(43)+'='})).status,403);
 assert.equal((await call('DELETE',{...body,expectedVersion:1})).status,409);
 assert.equal((await call('DELETE',{username:'alice',writeToken:token,expectedVersion:2})).status,200);
-assert.equal((await call('GET')).status,404);assert.equal(objects.size,0);
+assert.equal((await call('GET')).status,404);assert.equal(objects.size,1);
 assert.equal((await createVaultHandler(()=>null)(new Request('https://test/api/vault?username=alice'))).status,503);
 
 const sqlite=new DatabaseSync(':memory:');

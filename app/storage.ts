@@ -1,4 +1,5 @@
 'use client';
+import { normalizeUsername, validUsername } from '../lib/sync-contract';
 
 import {
   decodeBase64, decryptBytes, derive, encodeBase64, encryptBytes, salt, unseal,
@@ -21,13 +22,19 @@ export type StoredAttachment = { id: string; name: string; type: string; size: n
 export type VaultExport = { header: VaultHeader; notes: EncryptedRecord[]; attachments: EncryptedRecord[] };
 export type DecryptedVaultExport = { notes: StoredNote[]; attachments: StoredAttachment[] };
 type LegacyEnvelope = { payload: { format: number; iterations: number; salt: string; iv: string; data: string }; version?: number };
+export function legacyLocalKey(username: string) {
+  const prefix = 'clprotext:vault:';
+  const matches = Object.keys(localStorage).filter(key => key.startsWith(prefix) && normalizeUsername(key.slice(prefix.length)) === normalizeUsername(username));
+  if (matches.length > 1) throw new Error('Multiple legacy notebooks match this username. Export them before resolving the name collision.');
+  return matches[0] || `${prefix}${normalizeUsername(username)}`;
+}
 
 function assertBrowser() {
   if (typeof window === 'undefined' || !window.indexedDB) throw new Error('IndexedDB is unavailable.');
 }
 function databaseName(username: string) {
-  const value = username.trim();
-  if (!value) throw new Error('A username is required.');
+  const value = normalizeUsername(username);
+  if (!validUsername(value)) throw new Error('Invalid username.');
   return `${DB_PREFIX}${encodeBase64(enc.encode(value)).replace(/[+/=]/g, c => ({ '+': '-', '/': '_', '=': '' }[c] || ''))}`;
 }
 function request<T>(r: IDBRequest<T>) {
@@ -60,8 +67,9 @@ async function openRecord(record: EncryptedRecord, key: CryptoKey) {
 function now() { return new Date().toISOString(); }
 export async function openDatabase(username: string): Promise<IDBDatabase> {
   assertBrowser();
+  const name = await existingDatabaseName(username);
   return new Promise((resolve, reject) => {
-    const r = indexedDB.open(databaseName(username), STORAGE_FORMAT_VERSION);
+    const r = indexedDB.open(name, STORAGE_FORMAT_VERSION);
     r.onupgradeneeded = () => {
       const db = r.result;
       if (!db.objectStoreNames.contains('header')) db.createObjectStore('header');
@@ -71,7 +79,25 @@ export async function openDatabase(username: string): Promise<IDBDatabase> {
     r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error || new Error('Could not open vault.'));
   });
 }
+// Resolve legacy mixed-case names once per session, without renaming or deleting data.
+const databaseAliases = new Map<string, Promise<string>>();
+async function existingDatabaseName(username: string) {
+  const canonical = databaseName(username);
+  if (!databaseAliases.has(canonical)) databaseAliases.set(canonical, (async () => {
+    if (!indexedDB.databases) return canonical;
+    const matches = (await indexedDB.databases()).filter(entry => {
+      if (!entry.name?.startsWith(DB_PREFIX)) return false;
+      try { return databaseName(dec.decode(decodeBase64(entry.name.slice(DB_PREFIX.length).replace(/-/g,'+').replace(/_/g,'/')))) === canonical; } catch { return false; }
+    });
+    if (matches.length > 1) throw new Error('Multiple local notebooks match this username. Export them before resolving the name collision.');
+    return matches[0]?.name || canonical;
+  })());
+  return databaseAliases.get(canonical)!;
+}
 export async function readHeader(username: string) {
+  assertBrowser();
+  const name = await existingDatabaseName(username);
+  if (indexedDB.databases && !(await indexedDB.databases()).some(entry => entry.name === name)) return undefined;
   const db = await openDatabase(username);
   try { return await request<VaultHeader | undefined>(db.transaction('header').objectStore('header').get(HEADER_KEY)); } finally { db.close(); }
 }
@@ -198,7 +224,7 @@ export async function importVault(username: string, data: VaultExport, password:
   }); db.close(); await keyFor(username, password); return data.header;
 }
 export async function migrateLegacyLocalStorage(username: string, password: string) {
-  assertBrowser(); const raw = localStorage.getItem(`clprotext:vault:${username}`); if (!raw || await readHeader(username)) return false;
+  assertBrowser(); const raw = localStorage.getItem(legacyLocalKey(username)); if (!raw || await readHeader(username)) return false;
   const legacy = JSON.parse(raw) as LegacyEnvelope, notes = await unseal(legacy.payload, await derive(password, legacy.payload.salt, legacy.payload.iterations));
   const header = await createVault(username, password), key = await derive(password, header.salt, header.iterations);
   const noteRecords: EncryptedRecord[] = [], attachmentRecords: Array<EncryptedRecord & { name: string; type: string; size: number }> = [];
@@ -227,8 +253,8 @@ export async function migrateLegacyLocalStorage(username: string, password: stri
 
 // Save the entire working copy atomically. In particular, deleted notes must not
 // survive in IndexedDB and reappear on the next unlock or cloud snapshot.
-export async function replaceNotebook(username: string, password: string, notes: import('./crypto').Note[]) {
-  const {key,header} = await keyFor(username,password);
+export async function replaceNotebook(username: string, password: string, notes: import('./crypto').Note[], initialHeader?: VaultHeader) {
+  const {key,header} = initialHeader ? {key:await derive(password,initialHeader.salt,initialHeader.iterations),header:initialHeader} : await keyFor(username,password);
   const noteRecords: EncryptedRecord[] = [], attachmentRecords: Array<EncryptedRecord & {name:string;type:string;size:number}> = [];
   for (const note of notes) {
     const attachmentIds: string[] = [];
@@ -247,6 +273,14 @@ export async function replaceNotebook(username: string, password: string, notes:
     t.objectStore('notes').clear(); t.objectStore('attachments').clear();
     noteRecords.forEach(record=>t.objectStore('notes').put(record));
     attachmentRecords.forEach(record=>t.objectStore('attachments').put(record));
-    t.objectStore('header').put({...header,updatedAt:now()},HEADER_KEY);
+    if (initialHeader) t.objectStore('header').add(header,HEADER_KEY);
+    else t.objectStore('header').put({...header,updatedAt:now()},HEADER_KEY);
   }); } finally { db.close(); }
+}
+// Caller must authenticate the cloud envelope before calling this function.
+export async function installCloudNotebook(username: string, password: string, notes: import('./crypto').Note[], envelope: {salt:string;iterations:number}) {
+  const timestamp = now();
+  const header: VaultHeader = {formatVersion:1,kdf:'PBKDF2-SHA-256',salt:envelope.salt,iterations:envelope.iterations,createdAt:timestamp,updatedAt:timestamp,lastBackupAt:null};
+  await replaceNotebook(username,password,notes,header);
+  return header;
 }

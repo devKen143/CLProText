@@ -9,7 +9,10 @@ const handler = createVaultHandler(() => {
   repository: cloudRepository(env.DB),
   blobs: {
    get: async (key: string) => { const object = await bucket.get(key); return object ? object.text() : null; },
-   put: async (key: string, value: string) => { await bucket.put(key,value,{httpMetadata:{contentType:'application/json'}}); },
+   put: async (key: string, value: string) => {
+    const stored = await bucket.put(key,value,{onlyIf:{etagDoesNotMatch:'*'},httpMetadata:{contentType:'application/json'}});
+    if (!stored) throw new Error('Object already exists.');
+   },
    delete: async (key: string) => { await bucket.delete(key); },
   },
   // TODO before public deployment: distributed Cloudflare rate limiting by IP
@@ -17,5 +20,6 @@ const handler = createVaultHandler(() => {
  };
 });
 export const GET = handler;
+export const POST = handler;
 export const PUT = handler;
 export const DELETE = handler;
