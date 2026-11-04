@@ -1,11 +1,13 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import type { Note } from './crypto';
-import { deriveWriteToken, openCloud, sealCloud } from './sync-crypto';
+import { dataKeyWriteToken, type Credential, type Note } from './crypto';
+import { synchronizeNotebook, writeCloud, MergeError } from './cloud-client';
+import { markSynced } from './storage';
+import { deriveWriteToken, openCloud } from './sync-crypto';
 import type { CloudBlob } from '../lib/sync-contract';
-type Remote = { blob: CloudBlob; version: number };
+type Remote = { blob: CloudBlob; version: number; cryptoUsername?: string; updatedAt?: number };
 type Status = 'local only' | 'synced' | 'syncing' | 'conflict' | 'offline error';
-export function useCloudSync(options: { username: string; notes: Note[]; password: () => string; unlocked: boolean; dirty: boolean; busy: boolean; replace: (notes: Note[]) => Promise<void> }) {
+export function useCloudSync(options: { username: string; notes: Note[]; password: () => Credential; unlocked: boolean; dirty: boolean; busy: boolean; replace: (notes: Note[]) => Promise<void> }) {
  const [enabled,setEnabled] = useState(false), [status,setStatus] = useState<Status>('local only'), [message,setMessage] = useState(''), [working,setWorking] = useState(false);
  const latest = useRef(options);
  const baseline = useRef<number | null>(null), remote = useRef<Remote | null>(null), lastContent = useRef(''), token = useRef(''), inFlight = useRef(false), controller = useRef<AbortController | null>(null);
@@ -30,36 +32,23 @@ export function useCloudSync(options: { username: string; notes: Note[]; passwor
   } finally { clearTimeout(timeout); }
  }
  async function pull() { const {response,data} = await request('GET'); if(response.status === 404) return null; if(!response.ok) throw new Error(data.error || 'Cloud unavailable. Retry later.'); return data as Remote; }
- async function push(version: number) {
+ async function push(version: number | null) {
   const {notes,password,username} = latest.current;
   const pass=password(); if(!pass) throw new Error('Unlock your notebook first.');
-  token.current ||= await deriveWriteToken(pass,username);
-  const blob=await sealCloud(notes,pass,username);
-  const {response,data}=await request('PUT',{username,writeToken:token.current,expectedVersion:version,blob});
-  if(response.status === 409) { remote.current=await pull(); baseline.current=data.version; setStatus('conflict'); setMessage('Cloud changed. Export a backup, then choose which version to keep.'); return; }
-  if(!response.ok) throw new Error(data.error || 'Sync failed. Local notes are safe.');
-  baseline.current=data.version; lastContent.current=JSON.stringify(notes); remote.current=null; setStatus('synced'); setMessage('Encrypted snapshot saved to cloud.');
+  const result = await synchronizeNotebook(username,pass,notes,version,remote.current?.cryptoUsername || username,async items => {
+   await latest.current.replace(items); latest.current = { ...latest.current, notes: items };
+  });
+  baseline.current=result.version; lastContent.current=JSON.stringify(result.notes); remote.current=null; setStatus('synced'); setMessage(result.message);
  }
  async function run(task:()=>Promise<void>) {
   if(inFlight.current) return;
   inFlight.current=true; setWorking(true); setStatus('syncing'); setMessage('');
-  try { await task(); } catch(e) { setStatus('offline error'); setMessage((e as Error).message || 'Connection failed. Local notes are safe.'); }
+  try { await task(); } catch(e) { if (e instanceof MergeError) { remote.current=e.snapshot; baseline.current=e.snapshot.version; setStatus('conflict'); } else { baseline.current=null; setStatus('offline error'); } setMessage((e as Error).message || 'Connection failed. Local notes are safe.'); }
   finally { inFlight.current=false; setWorking(false); }
  }
  async function synchronize() {
   await run(async()=> {
    const o=latest.current; if(!o.unlocked || o.dirty || o.busy) { setStatus('local only'); return; }
-   if(baseline.current === null) {
-    const found=await pull(); remote.current=found;
-    if(found) {
-     // Never replace a local working copy during an automatic pull.
-     const cloudNotes=await openCloud(found.blob,o.password(),o.username);
-     baseline.current=found.version;
-     if(JSON.stringify(cloudNotes) !== JSON.stringify(o.notes)) { setStatus('conflict'); setMessage('Local and cloud notebooks differ. Back up first; choose which complete notebook to keep.'); return; }
-     lastContent.current=JSON.stringify(o.notes); setStatus('synced'); setMessage('Local and cloud copies match.'); return;
-    }
-    baseline.current=0;
-   }
    await push(baseline.current);
   });
  }
@@ -80,24 +69,30 @@ export function useCloudSync(options: { username: string; notes: Note[]; passwor
   if(latest.current.dirty || latest.current.busy) { setMessage('Save your local changes before resolving this conflict.'); return; }
   if(!window.confirm(choice==='local' ? 'Replace the cloud notebook with this local notebook? Export a backup first.' : 'Replace all local notes and attachments with the cloud notebook? Export a backup first.')) return;
   await run(async()=> {
-   if(choice==='local') { if(baseline.current===null) throw new Error('Retry sync first.'); await push(baseline.current); }
+   if(choice==='local') {
+    if(baseline.current===null) throw new Error('Retry sync first.');
+    const o=latest.current;
+    baseline.current=await writeCloud(o.username,o.password(),o.notes,baseline.current,remote.current?.cryptoUsername || o.username);
+    await markSynced(o.username,o.password(),o.notes); lastContent.current=JSON.stringify(o.notes); remote.current=null; setStatus('synced'); setMessage('Saved local notebook to cloud.');
+   }
    else {
     const found=await pull(); if(!found) throw new Error('Cloud notebook no longer exists. Local notes were kept.');
-    const notes=await openCloud(found.blob,latest.current.password(),latest.current.username);
-    await latest.current.replace(notes); baseline.current=found.version; lastContent.current=JSON.stringify(notes); remote.current=null; setStatus('synced'); setMessage('Loaded cloud snapshot.');
+    const notes=await openCloud(found.blob,latest.current.password(),found.cryptoUsername || latest.current.username,found.updatedAt);
+    await latest.current.replace(notes); await markSynced(latest.current.username,latest.current.password(),notes); baseline.current=found.version; lastContent.current=JSON.stringify(notes); remote.current=null; setStatus('synced'); setMessage('Loaded cloud snapshot.');
    }
   });
  }
  async function download(password: string) {
   const found=await pull(); if(!found) throw new Error('No cloud notebook exists at this username.');
-  const notes=await openCloud(found.blob,password,latest.current.username);
+  const notes=await openCloud(found.blob,password,found.cryptoUsername || latest.current.username,found.updatedAt);
   preferenceEnabled(true); return notes;
  }
  async function removeCloud() {
   if(!window.confirm('Delete the cloud copy permanently? Your saved local notebook remains. Export a backup first.')) return;
   await run(async()=> {
    const found=await pull(); if(!found) throw new Error('Cloud notebook was not found.');
-   token.current ||= await deriveWriteToken(latest.current.password(),latest.current.username);
+   const credential=latest.current.password();
+   token.current ||= typeof credential === 'string' ? await deriveWriteToken(credential,latest.current.username) : await dataKeyWriteToken(credential.rawKey);
    const {response,data}=await request('DELETE',{username:latest.current.username,writeToken:token.current,expectedVersion:found.version});
    if(!response.ok) throw new Error(data.error || 'Could not delete cloud copy.');
    preferenceEnabled(false); baseline.current=null; token.current=''; setStatus('local only'); setMessage('Cloud copy deleted. Local notebook kept.');

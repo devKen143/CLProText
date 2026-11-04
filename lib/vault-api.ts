@@ -37,17 +37,21 @@ export function createVaultHandler(dependencies: () => ApiDeps | null) {
           const row = await repository.get(username); if (!row) return response({error:'Notebook not found.'},404);
           if (url.searchParams.get('exists') === '1') return response({exists:true,version:row.version});
           const blob = await blobs.get(row.blobKey);
-          if (blob !== null) return response({blob:JSON.parse(blob),version:row.version,cryptoUsername:row.username});
+          if (blob !== null) return response({blob:JSON.parse(blob),version:row.version,cryptoUsername:row.username,updatedAt:row.updatedAt});
         }
         return response({error:'Cloud snapshot temporarily unavailable. Retry later.'},503);
       }
-      if (!['POST','PUT','DELETE'].includes(request.method)) return response({error:'Method not allowed.'},405);
+      if (!['POST','PUT','DELETE','PATCH'].includes(request.method)) return response({error:'Method not allowed.'},405);
       const origin = request.headers.get('origin');
       if (origin && origin !== new URL(request.url).origin) return response({error:'Cross-origin write rejected.'},403);
+      const rekey = request.method === 'PATCH' && new URL(request.url).pathname.endsWith('/rekey');
+      if (request.method === 'PATCH' && !rekey) return response({error:'Method not allowed.'},405);
       const body = await readBody(request);
       if (typeof body.username === 'string') body.username = normalizeUsername(body.username);
       if (!validUsername(body.username) || typeof body.writeToken !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(body.writeToken) || !Number.isSafeInteger(body.expectedVersion) || body.expectedVersion < 0) return response({error:'Invalid username, token or version.'},400);
+      if (rekey && (typeof body.newWriteToken !== 'string' || !/^[A-Za-z0-9+/]{43}=$/.test(body.newWriteToken) || body.blob?.format !== 3)) return response({error:'Invalid rekey request.'},400);
       const current = await repository.get(body.username), tokenHash = await hashToken(body.writeToken);
+      if (rekey && !current) return response({error:'Notebook not found.'},404);
       if (current && (request.method === 'POST' || body.expectedVersion === 0)) return response({error:'Notebook already exists.',version:current.version},409);
       if (request.method === 'POST' && body.expectedVersion !== 0) return response({error:'Creation requires version zero.'},400);
       if (current && !equalHash(current.writeTokenHash,tokenHash)) return response({error:'Incorrect write token. Check the notebook password.'},403);
@@ -62,7 +66,7 @@ export function createVaultHandler(dependencies: () => ApiDeps | null) {
       const serialized = JSON.stringify(body.blob), sizeBytes = encoder.encode(serialized).byteLength;
       if(sizeBytes > MAX_BLOB_BYTES) return response({error:'Encrypted blob exceeds 8 MiB.'},413);
       const now = Date.now(), blobKey = `vaults/${body.username}/${crypto.randomUUID()}`;
-      const next: VaultRow = {username:current?.username || body.username,writeTokenHash:tokenHash,version:(current?.version || 0)+1,blobKey,sizeBytes,createdAt:current?.createdAt || now,updatedAt:now};
+      const next: VaultRow = {username:current?.username || body.username,writeTokenHash:rekey ? await hashToken(body.newWriteToken) : tokenHash,version:(current?.version || 0)+1,blobKey,sizeBytes,createdAt:current?.createdAt || now,updatedAt:now};
       await blobs.put(blobKey,serialized);
       // Immutable R2 blobs plus a D1 compare-and-swap prevent a losing write corrupting the winner.
       // On an ambiguous D1 failure retain the blob: deleting it might delete a committed snapshot.

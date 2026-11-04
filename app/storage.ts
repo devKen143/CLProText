@@ -1,8 +1,9 @@
 'use client';
+import { normalizeNotes, noteTimestamp, lastSyncedSnapshot, type SyncedSnapshot } from './merge-notebooks';
 import { normalizeUsername, validUsername } from '../lib/sync-contract';
 
 import {
-  decodeBase64, decryptBytes, derive, encodeBase64, encryptBytes, salt, unseal,
+  decodeBase64, decryptBytes, derive, encodeBase64, encryptBytes, salt, unseal, unlockDataKey, importDataKey, wrapDataKey, rewrapPassword, rewrapRecovery, type Credential, type VaultAccess, type KeyEnvelope,
 } from './crypto';
 
 export const STORAGE_FORMAT_VERSION = 1;
@@ -14,10 +15,10 @@ const dec = new TextDecoder();
 
 export type VaultHeader = {
   formatVersion: number; kdf: 'PBKDF2-SHA-256'; iterations: number; salt: string;
-  createdAt: string; updatedAt: string; lastBackupAt: string | null;
+  createdAt: string; updatedAt: string; lastBackupAt: string | null; lastSyncedSnapshot?: { iv: string; data: string }; keys?: KeyEnvelope; keyCheck?: { iv: string; data: string }; legacyToken?: { iv: string; data: string }; recoveryPending?: boolean;
 };
 export type EncryptedRecord = { id: string; iv: string; data: string; compressed: boolean; updatedAt: string };
-export type StoredNote = { id: string; title: string; text: string; attachmentIds: string[] };
+export type StoredNote = { id: string; title: string; text: string; payloadVersion?: 1 | 2 | 3 | 4 | 5; shares?: import('./crypto').NoteShare[]; pinned?: boolean; tags?: string[]; history?: import('./crypto').NoteVersion[]; purgedAt?: string; updatedAt?: string | number; deletedAt?: string; attachmentIds: string[] };
 export type StoredAttachment = { id: string; name: string; type: string; size: number; data: Uint8Array };
 export type VaultExport = { header: VaultHeader; notes: EncryptedRecord[]; attachments: EncryptedRecord[] };
 export type DecryptedVaultExport = { notes: StoredNote[]; attachments: StoredAttachment[] };
@@ -112,49 +113,123 @@ export async function updateHeader(username: string, changes: Partial<Pick<Vault
   if (!header) { db.close(); throw new Error('Vault does not exist.'); }
   const updated = { ...header, ...changes, updatedAt: now() }; await tx(db, ['header'], 'readwrite', t => t.objectStore('header').put(updated, HEADER_KEY)); db.close(); return updated;
 }
-export async function rotateVaultPassword(username: string, oldPassword: string, newPassword: string) {
-  const { key: oldKey, header } = await keyFor(username, oldPassword);
+export async function rotateVaultPassword(username: string, oldPassword: Credential, newPassword: string) {
+  const { header } = await keyFor(username,oldPassword);
+  if (!header.keys) throw new Error('Finish the recovery-key upgrade first.');
+  const access = typeof oldPassword === 'string' ? await unlockDataKey(header.keys,oldPassword) : oldPassword;
+  return commitKeyEnvelope(username,access,await rewrapPassword({...access,envelope:header.keys},newPassword));
+}
+export async function unlockVaultAccess(username: string, secret: string, recovery = false): Promise<Credential> {
+  const header = await readHeader(username);
+  if (!header) throw new Error('Vault does not exist.');
+  if (!header.keys) { if (recovery) throw new Error('This notebook has not been upgraded for recovery keys yet.'); return secret; }
+  const access = await unlockDataKey(header.keys,secret,recovery);
+  if (!recovery) access.legacyPassword = secret;
+  await keyFor(username,access);
+  if (header.legacyToken) access.legacyWriteToken = dec.decode(await decryptBytes(header.legacyToken,access.key,'legacy-write-token'));
+  return access;
+}
+export async function commitKeyEnvelope(username: string, access: VaultAccess, keys: KeyEnvelope, recoveryPending = false) {
+  const {header} = await keyFor(username,access);
+  const updated = {...header,keys,salt:keys.salt,iterations:keys.iterations,recoveryPending,updatedAt:now()};
   const db = await openDatabase(username);
-  const notes = await request<EncryptedRecord[]>(db.transaction('notes').objectStore('notes').getAll());
-  const attachments = await request<Array<EncryptedRecord & { name: string; type: string; size: number }>>(db.transaction('attachments').objectStore('attachments').getAll());
+  try { await tx(db,['header'],'readwrite',t => { const store=t.objectStore('header'), check=store.get(HEADER_KEY); check.onsuccess=()=>{ if(JSON.stringify(check.result)!==JSON.stringify(header)) { t.abort(); return; } store.put(updated,HEADER_KEY); }; }); } finally { db.close(); }
+  access.envelope = keys;
+  return updated;
+}
+export async function migrateVaultKey(username: string, password: Credential, legacyWriteToken?: string, existing?: VaultAccess, progress?: (done: number,total: number) => void) {
+  const {key:oldKey,header} = await keyFor(username,password);
+  if (header.keys) {
+    const access = typeof password === 'string' ? await unlockDataKey(header.keys,password) : password;
+    if (header.legacyToken) access.legacyWriteToken = dec.decode(await decryptBytes(header.legacyToken,access.key,'legacy-write-token'));
+    if (!existing) return {access,recoveryKey:''};
+    if (encodeBase64(access.rawKey) === encodeBase64(existing.rawKey)) {
+      if (JSON.stringify(header.keys) !== JSON.stringify(existing.envelope)) await commitKeyEnvelope(username,access,existing.envelope,header.recoveryPending);
+      return {access,recoveryKey:''};
+    }
+  }
+  if (!existing && typeof password !== 'string') throw new Error('A legacy password is required for migration.');
+  const db = await openDatabase(username);
+  const records = await request<EncryptedRecord[]>(db.transaction('notes').objectStore('notes').getAll());
+  const attachments = await request<Array<EncryptedRecord & {name:string;type:string;size:number}>>(db.transaction('attachments').objectStore('attachments').getAll());
   db.close();
-  const nextHeader: VaultHeader = { ...header, salt: salt(), updatedAt: now() };
-  const newKey = await derive(newPassword, nextHeader.salt, nextHeader.iterations);
-  const nextNotes = await Promise.all(notes.map(async record => sealRecord(await openRecord(record, oldKey), newKey, record.id)));
-  const nextAttachments = await Promise.all(attachments.map(async record => ({ ...await sealRecord(await openRecord(record, oldKey), newKey, record.id), name: record.name, type: record.type, size: record.size })));
+  if (!records.length && !attachments.length && !header.lastSyncedSnapshot) throw new Error('Cannot authenticate an empty legacy vault.');
+  const raw = existing?.rawKey || crypto.getRandomValues(new Uint8Array(32));
+  const wrapped = existing ? {envelope:existing.envelope,recoveryKey:''} : await wrapDataKey(raw,password as string);
+  const access: VaultAccess = existing || {key:await importDataKey(raw),rawKey:raw,envelope:wrapped.envelope,legacyWriteToken,legacyPassword:typeof password === 'string' ? password : undefined};
+  const total = records.length + attachments.length; let done = 0;
+  const migrate = async (record: EncryptedRecord) => { const next = {...record,...await sealRecord(await openRecord(record,oldKey),access.key,record.id)}; progress?.(++done,total); return next; };
+  // All authentication/encryption finishes before opening the single write transaction.
+  const nextNotes: EncryptedRecord[] = []; for (const record of records) nextNotes.push(await migrate(record));
+  const nextAttachments: EncryptedRecord[] = []; for (const record of attachments) nextAttachments.push(await migrate(record));
+  const next: VaultHeader = {...header,formatVersion:2,keys:wrapped.envelope,salt:wrapped.envelope.salt,recoveryPending:!!wrapped.recoveryKey,keyCheck:await encryptBytes(enc.encode('CLProText:data-key'),access.key,'key-check')};
+  if (header.lastSyncedSnapshot) next.lastSyncedSnapshot = await encryptBytes(await decryptBytes(header.lastSyncedSnapshot,oldKey,'sync-snapshot'),access.key,'sync-snapshot');
+  if (existing) delete next.legacyToken;
+  if (legacyWriteToken) next.legacyToken = await encryptBytes(enc.encode(legacyWriteToken),access.key,'legacy-write-token');
   const nextDb = await openDatabase(username);
-  await tx(nextDb, ['header', 'notes', 'attachments'], 'readwrite', t => {
-    t.objectStore('header').put(nextHeader, HEADER_KEY);
-    nextNotes.forEach(record => t.objectStore('notes').put(record));
-    nextAttachments.forEach(record => t.objectStore('attachments').put(record));
-  });
-  nextDb.close();
-  return nextHeader;
+  try { await tx(nextDb,['header','notes','attachments'],'readwrite',t => {
+    const check = t.objectStore('header').get(HEADER_KEY);
+    check.onsuccess = () => {
+      if (JSON.stringify(check.result) !== JSON.stringify(header)) { t.abort(); return; }
+      t.objectStore('header').put(next,HEADER_KEY);
+      nextNotes.forEach(record => t.objectStore('notes').put(record));
+      nextAttachments.forEach(record => t.objectStore('attachments').put(record));
+    };
+  }); } finally { nextDb.close(); }
+  return {access,recoveryKey:wrapped.recoveryKey};
 }
 export async function removeVault(username: string) {
   assertBrowser(); return new Promise<void>((resolve, reject) => { const r = indexedDB.deleteDatabase(databaseName(username)); r.onsuccess = () => resolve(); r.onerror = () => reject(r.error); });
 }
-async function keyFor(username: string, password: string) {
+async function keyFor(username: string, password: Credential) {
   const header = await readHeader(username); if (!header) throw new Error('Vault does not exist.');
+  if (header.keys) {
+    const access = typeof password === 'string' ? await unlockDataKey(header.keys,password) : password;
+    if (!header.keyCheck || dec.decode(await decryptBytes(header.keyCheck,access.key,'key-check')) !== 'CLProText:data-key') throw new Error('Incorrect notebook key.');
+    return {key:access.key,header};
+  }
+  if (typeof password !== 'string') throw new Error('Legacy notebook requires its password.');
   return { key: await derive(password, header.salt, header.iterations), header };
 }
-export async function createNote(username: string, password: string, note: Omit<StoredNote, 'attachmentIds'> & { attachmentIds?: string[] }) {
-  const { key } = await keyFor(username, password), id = note.id || crypto.randomUUID(), record = await sealRecord(enc.encode(JSON.stringify({ ...note, id, attachmentIds: note.attachmentIds || [] })), key, id), db = await openDatabase(username);
+function normalizeStoredNote(note: StoredNote, updatedAt: string): StoredNote {
+  if (note.payloadVersion !== undefined && note.payloadVersion !== 1 && note.payloadVersion !== 2 && note.payloadVersion !== 3 && note.payloadVersion !== 4 && note.payloadVersion !== 5) throw new Error('Unsupported note format.');
+  return { ...note, payloadVersion: 5, updatedAt: noteTimestamp(note.updatedAt, updatedAt), ...(note.deletedAt ? { deletedAt: noteTimestamp(note.deletedAt) } : {}) };
+}
+export async function readSyncedSnapshot(username: string, password: Credential): Promise<SyncedSnapshot> {
+  const { key, header } = await keyFor(username, password);
+  if (!header.lastSyncedSnapshot) return {};
+  const value = JSON.parse(dec.decode(await decryptBytes(header.lastSyncedSnapshot, key, 'sync-snapshot')));
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.values(value).some(time => typeof time !== 'string' || !Number.isFinite(Date.parse(time)))) throw new Error('Invalid sync snapshot.');
+  return value;
+}
+export async function markSynced(username: string, password: Credential, notes: import('./crypto').Note[]) {
+  const { key } = await keyFor(username, password);
+  const snapshot = await encryptBytes(enc.encode(JSON.stringify(lastSyncedSnapshot(notes))), key, 'sync-snapshot');
+  const db = await openDatabase(username);
+  try { await tx(db, ['header'], 'readwrite', t => {
+    const store = t.objectStore('header'), request = store.get(HEADER_KEY);
+    request.onsuccess = () => store.put({ ...request.result, lastSyncedSnapshot: snapshot }, HEADER_KEY);
+  }); } finally { db.close(); }
+}
+export async function createNote(username: string, password: Credential, note: Omit<StoredNote, 'attachmentIds'> & { attachmentIds?: string[] }) {
+  const { key, header } = await keyFor(username, password), id = note.id || crypto.randomUUID(), record = await sealRecord(enc.encode(JSON.stringify({ ...note, id, payloadVersion: 5, updatedAt: noteTimestamp(note.updatedAt, header.updatedAt), attachmentIds: note.attachmentIds || [] })), key, id), db = await openDatabase(username);
   await tx(db, ['notes'], 'readwrite', t => t.objectStore('notes').put(record)); db.close(); return id;
 }
-export async function updateNote(username: string, password: string, note: StoredNote) { return createNote(username, password, note); }
-export async function readNote(username: string, password: string, id: string): Promise<StoredNote | null> {
+export async function updateNote(username: string, password: Credential, note: StoredNote) { return createNote(username, password, note); }
+export async function readNote(username: string, password: Credential, id: string): Promise<StoredNote | null> {
   const { key } = await keyFor(username, password), db = await openDatabase(username), record = await request<EncryptedRecord | undefined>(db.transaction('notes').objectStore('notes').get(id)); db.close();
-  return record ? JSON.parse(dec.decode(await openRecord(record, key))) as StoredNote : null;
+  const header = await readHeader(username);
+  return record ? normalizeStoredNote(JSON.parse(dec.decode(await openRecord(record, key))), header!.updatedAt) : null;
 }
-export async function listNotes(username: string, password: string) {
+export async function listNotes(username: string, password: Credential) {
   const { key } = await keyFor(username, password), db = await openDatabase(username), records = await request<EncryptedRecord[]>(db.transaction('notes').objectStore('notes').getAll()); db.close();
-  return Promise.all(records.map(async record => JSON.parse(dec.decode(await openRecord(record, key))) as StoredNote));
+  const header = await readHeader(username);
+  return Promise.all(records.map(async record => normalizeStoredNote(JSON.parse(dec.decode(await openRecord(record, key))), header!.updatedAt)));
 }
-export async function removeNote(username: string, password: string, id: string) {
+export async function removeNote(username: string, password: Credential, id: string) {
   await keyFor(username, password); const db = await openDatabase(username); await tx(db, ['notes'], 'readwrite', t => t.objectStore('notes').delete(id)); db.close();
 }
-export async function removeNotes(username: string, password: string, ids?: string[]) {
+export async function removeNotes(username: string, password: Credential, ids?: string[]) {
   await keyFor(username, password); const db = await openDatabase(username);
   await tx(db, ['notes'], 'readwrite', t => {
     const store = t.objectStore('notes');
@@ -162,38 +237,38 @@ export async function removeNotes(username: string, password: string, ids?: stri
   });
   db.close();
 }
-export async function createAttachment(username: string, password: string, attachment: Omit<StoredAttachment, 'id'> & { id?: string }) {
+export async function createAttachment(username: string, password: Credential, attachment: Omit<StoredAttachment, 'id'> & { id?: string }) {
   const { key } = await keyFor(username, password), id = attachment.id || crypto.randomUUID(), record = await sealRecord(attachment.data, key, id), db = await openDatabase(username);
   const value = { ...record, name: attachment.name, type: attachment.type, size: attachment.size };
   await tx(db, ['attachments'], 'readwrite', t => t.objectStore('attachments').put(value)); db.close(); return id;
 }
-export async function readAttachment(username: string, password: string, id: string): Promise<StoredAttachment | null> {
+export async function readAttachment(username: string, password: Credential, id: string): Promise<StoredAttachment | null> {
   const { key } = await keyFor(username, password), db = await openDatabase(username), record = await request<(EncryptedRecord & Omit<StoredAttachment, 'data'>) | undefined>(db.transaction('attachments').objectStore('attachments').get(id)); db.close();
   return record ? { id, name: record.name, type: record.type, size: record.size, data: await openRecord(record, key) } : null;
 }
-export async function listAttachments(username: string, password: string) {
+export async function listAttachments(username: string, password: Credential) {
   const { key } = await keyFor(username, password), db = await openDatabase(username);
   const records = await request<Array<EncryptedRecord & { name: string; type: string; size: number }>>(db.transaction('attachments').objectStore('attachments').getAll());
   db.close();
   return Promise.all(records.map(async record => ({ id: record.id, name: record.name, type: record.type, size: record.size, data: await openRecord(record, key) })));
 }
-export async function removeAttachment(username: string, password: string, id: string) { await keyFor(username, password); const db = await openDatabase(username); await tx(db, ['attachments'], 'readwrite', t => t.objectStore('attachments').delete(id)); db.close(); }
-export async function exportVault(username: string, password: string): Promise<VaultExport> {
+export async function removeAttachment(username: string, password: Credential, id: string) { await keyFor(username, password); const db = await openDatabase(username); await tx(db, ['attachments'], 'readwrite', t => t.objectStore('attachments').delete(id)); db.close(); }
+export async function exportVault(username: string, password: Credential): Promise<VaultExport> {
   const { header } = await keyFor(username, password), db = await openDatabase(username);
   const notes = await request<EncryptedRecord[]>(db.transaction('notes').objectStore('notes').getAll());
   const attachments = await request<EncryptedRecord[]>(db.transaction('attachments').objectStore('attachments').getAll()); db.close();
   return { header, notes, attachments };
 }
 export async function previewVaultExport(data: VaultExport, backupPassword: string): Promise<DecryptedVaultExport> {
-  const key = await derive(backupPassword, data.header.salt, data.header.iterations);
-  const notes = await Promise.all(data.notes.map(async record => JSON.parse(dec.decode(await openRecord(record, key))) as StoredNote));
+  const key = data.header.keys ? (await unlockDataKey(data.header.keys,backupPassword)).key : await derive(backupPassword, data.header.salt, data.header.iterations);
+  const notes = await Promise.all(data.notes.map(async record => normalizeStoredNote(JSON.parse(dec.decode(await openRecord(record, key))), data.header.updatedAt)));
   const attachments = await Promise.all(data.attachments.map(async record => {
     const metadata = record as EncryptedRecord & { name: string; type: string; size: number };
     return { id: metadata.id, name: metadata.name, type: metadata.type, size: metadata.size, data: await openRecord(record, key) };
   }));
   return { notes, attachments };
 }
-export async function mergeVaultExport(username: string, currentPassword: string, data: VaultExport, backupPassword: string, replace = false) {
+export async function mergeVaultExport(username: string, currentPassword: Credential, data: VaultExport, backupPassword: string, replace = false) {
   const imported = await previewVaultExport(data, backupPassword);
   const { key } = await keyFor(username, currentPassword);
   const db = await openDatabase(username);
@@ -217,8 +292,12 @@ export async function mergeVaultExport(username: string, currentPassword: string
   nextDb.close();
   return { notes: imported.notes.length, attachments: imported.attachments.length };
 }
-export async function importVault(username: string, data: VaultExport, password: string) {
+export async function importVault(username: string, data: VaultExport, password: Credential) {
   const header = await readHeader(username); if (header) throw new Error('Vault already exists.');
+  const verifiedKey = typeof password !== 'string' ? password.key : data.header.keys ? (await unlockDataKey(data.header.keys,password)).key : await derive(password,data.header.salt,data.header.iterations);
+  for (const record of [...data.notes,...data.attachments]) await openRecord(record,verifiedKey);
+  if (data.header.keyCheck) await decryptBytes(data.header.keyCheck,verifiedKey,'key-check');
+  if (!data.notes.length && !data.header.keyCheck) throw new Error('Cannot authenticate an empty legacy backup.');
   const db = await openDatabase(username); await tx(db, ['header', 'notes', 'attachments'], 'readwrite', t => {
     t.objectStore('header').put(data.header, HEADER_KEY); data.notes.forEach(n => t.objectStore('notes').put(n)); data.attachments.forEach(a => t.objectStore('attachments').put(a));
   }); db.close(); await keyFor(username, password); return data.header;
@@ -228,7 +307,7 @@ export async function migrateLegacyLocalStorage(username: string, password: stri
   const legacy = JSON.parse(raw) as LegacyEnvelope, notes = await unseal(legacy.payload, await derive(password, legacy.payload.salt, legacy.payload.iterations));
   const header = await createVault(username, password), key = await derive(password, header.salt, header.iterations);
   const noteRecords: EncryptedRecord[] = [], attachmentRecords: Array<EncryptedRecord & { name: string; type: string; size: number }> = [];
-  for (const note of notes) {
+  for (const note of normalizeNotes(notes, header.updatedAt)) {
     const attachmentIds: string[] = [];
     for (const attachment of note.attachments || []) {
       attachmentIds.push(attachment.id);
@@ -239,7 +318,7 @@ export async function migrateLegacyLocalStorage(username: string, password: stri
       const record = await sealRecord(decodeBase64(encoded), key, attachment.id);
       attachmentRecords.push({ ...record, name: attachment.name, type, size: attachment.size });
     }
-    noteRecords.push(await sealRecord(enc.encode(JSON.stringify({ id: note.id, title: note.title, text: note.text, attachmentIds })), key, note.id));
+    noteRecords.push(await sealRecord(enc.encode(JSON.stringify({ id: note.id, title: note.title, text: note.text, payloadVersion: 5, updatedAt: noteTimestamp(note.updatedAt, header.updatedAt), deletedAt: note.deletedAt, history: note.history, purgedAt: note.purgedAt, pinned: note.pinned, tags: note.tags, shares: note.shares, attachmentIds })), key, note.id));
   }
   const db = await openDatabase(username);
   await tx(db, ['notes', 'attachments'], 'readwrite', t => {
@@ -253,10 +332,10 @@ export async function migrateLegacyLocalStorage(username: string, password: stri
 
 // Save the entire working copy atomically. In particular, deleted notes must not
 // survive in IndexedDB and reappear on the next unlock or cloud snapshot.
-export async function replaceNotebook(username: string, password: string, notes: import('./crypto').Note[], initialHeader?: VaultHeader) {
-  const {key,header} = initialHeader ? {key:await derive(password,initialHeader.salt,initialHeader.iterations),header:initialHeader} : await keyFor(username,password);
+export async function replaceNotebook(username: string, password: Credential, notes: import('./crypto').Note[], initialHeader?: VaultHeader) {
+  const {key,header} = initialHeader ? {key:typeof password !== 'string' ? password.key : initialHeader.keys ? (await unlockDataKey(initialHeader.keys,password)).key : await derive(password,initialHeader.salt,initialHeader.iterations),header:initialHeader} : await keyFor(username,password);
   const noteRecords: EncryptedRecord[] = [], attachmentRecords: Array<EncryptedRecord & {name:string;type:string;size:number}> = [];
-  for (const note of notes) {
+  for (const note of normalizeNotes(notes, header.updatedAt)) {
     const attachmentIds: string[] = [];
     for(const attachment of note.attachments || []) {
       const comma=attachment.dataUrl.indexOf(',');
@@ -266,7 +345,7 @@ export async function replaceNotebook(username: string, password: string, notes:
       attachmentRecords.push({...await sealRecord(data,key,attachment.id),name:attachment.name,type:attachment.type,size:attachment.size});
       attachmentIds.push(attachment.id);
     }
-    noteRecords.push(await sealRecord(enc.encode(JSON.stringify({id:note.id,title:note.title,text:note.text,attachmentIds})),key,note.id));
+    noteRecords.push(await sealRecord(enc.encode(JSON.stringify({id:note.id,title:note.title,text:note.text,payloadVersion:5,updatedAt:noteTimestamp(note.updatedAt,header.updatedAt),deletedAt:note.deletedAt,history:note.history,purgedAt:note.purgedAt,pinned:note.pinned,tags:note.tags,shares:note.shares,attachmentIds})),key,note.id));
   }
   const db=await openDatabase(username);
   try { await tx(db,['header','notes','attachments'],'readwrite',t=> {
@@ -278,9 +357,11 @@ export async function replaceNotebook(username: string, password: string, notes:
   }); } finally { db.close(); }
 }
 // Caller must authenticate the cloud envelope before calling this function.
-export async function installCloudNotebook(username: string, password: string, notes: import('./crypto').Note[], envelope: {salt:string;iterations:number}) {
+export async function installCloudNotebook(username: string, password: Credential, notes: import('./crypto').Note[], envelope: {salt:string;iterations:number;keys?:KeyEnvelope}) {
   const timestamp = now();
   const header: VaultHeader = {formatVersion:1,kdf:'PBKDF2-SHA-256',salt:envelope.salt,iterations:envelope.iterations,createdAt:timestamp,updatedAt:timestamp,lastBackupAt:null};
+  if (envelope.keys) { const access = typeof password === 'string' ? await unlockDataKey(envelope.keys,password) : password; header.formatVersion=2; header.keys=envelope.keys; header.keyCheck=await encryptBytes(enc.encode('CLProText:data-key'),access.key,'key-check'); }
   await replaceNotebook(username,password,notes,header);
+  await markSynced(username,password,notes);
   return header;
 }

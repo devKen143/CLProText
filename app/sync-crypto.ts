@@ -1,4 +1,5 @@
-import { derive, salt, encryptBytes, decryptBytes, encodeBase64, unseal, type Envelope, type Note } from './crypto';
+import { normalizeNotes } from './merge-notebooks';
+import { derive, salt, encryptBytes, decryptBytes, encodeBase64, unseal, unlockDataKey, type Credential, type Envelope, type Note } from './crypto';
 import { MAX_BLOB_BYTES, normalizeUsername, validBlob, validUsername, type CloudBlob } from '../lib/sync-contract';
 const encoder = new TextEncoder();
 export const WRITE_TOKEN_CONTEXT = 'CLProText:write-token:v1:';
@@ -8,19 +9,20 @@ export async function deriveWriteToken(password: string, username: string) {
   const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', iterations: 600000, salt: encoder.encode(WRITE_TOKEN_CONTEXT + username) }, material, 256);
   return encodeBase64(new Uint8Array(bits));
 }
-export async function sealCloud(notes: Note[], password: string, username: string): Promise<CloudBlob> {
-  const s = salt(), key = await derive(password, s);
-  const packed = new Uint8Array(await new Response(new Blob([JSON.stringify(notes)]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
-  const encrypted = await encryptBytes(packed, key, `cloud:v2:${username}`);
-  const blob: CloudBlob = { format: 2, iterations: 600000, compression: 'gzip', salt: s, ...encrypted };
+export async function sealCloud(notes: Note[], password: Credential, username: string): Promise<CloudBlob> {
+  const s = typeof password === 'string' ? salt() : password.envelope.salt, key = typeof password === 'string' ? await derive(password,s) : password.key;
+  const packed = new Uint8Array(await new Response(new Blob([JSON.stringify(normalizeNotes(notes))]).stream().pipeThrough(new CompressionStream('gzip'))).arrayBuffer());
+  const encrypted = await encryptBytes(packed, key, `cloud:v${typeof password === 'string' ? 2 : 3}:${username}`);
+  const blob: CloudBlob = { format: typeof password === 'string' ? 2 : 3, ...(typeof password === 'string' ? {} : {keys:password.envelope}), iterations: 600000, compression: 'gzip', salt: s, ...encrypted };
   if (encoder.encode(JSON.stringify(blob)).byteLength > MAX_BLOB_BYTES) throw new Error('Cloud snapshot exceeds 8 MiB. Local notes are safe; remove attachments or export a backup.');
   return blob;
 }
-export async function openCloud(blob: CloudBlob | Envelope, password: string, username: string): Promise<Note[]> {
-  if (blob.format === 1) return unseal(blob,await derive(password,blob.salt,blob.iterations));
+export async function openCloud(blob: CloudBlob | Envelope, password: Credential, username: string, notebookUpdatedAt?: string | number): Promise<Note[]> {
+  if (blob.format === 1) { if (typeof password !== 'string') throw new Error('Legacy cloud copy requires its password.'); return normalizeNotes(await unseal(blob,await derive(password,blob.salt,blob.iterations)), notebookUpdatedAt); }
   if (!validBlob(blob)) throw new Error('Invalid cloud notebook.');
-  const key = await derive(password, blob.salt);
-  const packed = await decryptBytes(blob, key, `cloud:v2:${username}`);
+  if (blob.format === 2 && typeof password !== 'string') throw new Error('Finish upgrading the legacy cloud copy before merging.');
+  const key = blob.format === 3 ? (typeof password === 'string' ? (await unlockDataKey(blob.keys!,password)).key : password.key) : await derive(password as string,blob.salt);
+  const packed = await decryptBytes(blob, key, `cloud:v${blob.format}:${username}`);
   const reader = new Blob([packed as BlobPart]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
   const chunks: Uint8Array[] = []; let total = 0;
   try { for (;;) { const {value,done} = await reader.read(); if(done) break; total += value.byteLength; if(total > 32 * 1024 * 1024) { await reader.cancel(); throw new Error('Cloud snapshot expands beyond the supported limit.'); } chunks.push(value); } } finally { reader.releaseLock(); }
@@ -34,5 +36,5 @@ export async function openCloud(blob: CloudBlob | Envelope, password: string, us
       if (!/^[A-Za-z0-9+/]*={0,2}$/.test(raw) || atob(raw).length !== a.size) throw new Error('Invalid cloud attachment size.');
     }
   }
-  return parsed;
+  return normalizeNotes(parsed, notebookUpdatedAt);
 }

@@ -6,11 +6,14 @@ export function normalizeUsername(value: string) { return value.trim().toLowerCa
 export function validUsername(value: unknown): value is string {
   return typeof value === 'string' && value === normalizeUsername(value) && USERNAME_PATTERN.test(value) && !reserved.has(value);
 }
-export type CloudBlob = { format: 2; iterations: 600000; compression: 'gzip'; salt: string; iv: string; data: string };
+export type CloudBlob = { format: 2 | 3; keys?: import('../app/crypto').KeyEnvelope; iterations: 600000; compression: 'gzip'; salt: string; iv: string; data: string };
 export function validBlob(value: unknown): value is CloudBlob {
   if (!value || typeof value !== 'object') return false;
   const p = value as CloudBlob;
-  return Object.keys(p).sort().join(',') === 'compression,data,format,iterations,iv,salt' && p.format === 2 && p.iterations === 600000 && p.compression === 'gzip' &&
+  const wrapped = (v: unknown) => { const w = v as {iv?:string;data?:string} | undefined; return !!w && typeof w.iv === 'string' && /^[A-Za-z0-9+/]{16}$/.test(w.iv) && typeof w.data === 'string' && /^[A-Za-z0-9+/]{64}$/.test(w.data); };
+  const keys = p.keys;
+  if (p.format === 3 && (!keys || keys.iterations !== 600000 || !/^[A-Za-z0-9+/]{22}==$/.test(keys.salt) || !/^[A-Za-z0-9+/]{22}==$/.test(keys.recoverySalt) || !wrapped(keys.wrappedKey) || !wrapped(keys.recoveryWrappedKey))) return false;
+  return Object.keys(p).sort().join(',') === (p.format === 3 ? 'compression,data,format,iterations,iv,keys,salt' : 'compression,data,format,iterations,iv,salt') && (p.format === 2 || p.format === 3) && p.iterations === 600000 && p.compression === 'gzip' &&
     typeof p.salt === 'string' && /^[A-Za-z0-9+/]{22}==$/.test(p.salt) &&
     typeof p.iv === 'string' && /^[A-Za-z0-9+/]{16}$/.test(p.iv) &&
     typeof p.data === 'string' && p.data.length >= 24 && p.data.length % 4 === 0 && /^[A-Za-z0-9+/]+={0,2}$/.test(p.data);
