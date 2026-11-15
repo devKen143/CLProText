@@ -246,3 +246,136 @@
 .focus-mode .editor{width:100%;max-width:720px;min-height:0;flex:0 1 720px}
 .focus-mode .paper{overflow-y:auto}
 @media(max-width:859px){.focus-mode .workspace{padding:20px;flex-direction:row}.focus-mode .paper{padding:20px}}
+
+/* ───────── Minimal theme ─────────
+   One calm layer over everything above: neutral paper and ink, a single green
+   accent, hairlines instead of shadows, and less chrome around the writing. */
+.app{--bg:#FAF9F6;--surface:#FFFFFF;--ink:#1B1B1C;--mute:#63635F;--line:#E6E4DE;--green:#2F7A4D;--green-dark:#24613C;--tint:#F1EFEA;--primary:#1B1B1C;--on-primary:#FAF9F6;--selected-line:#D6D3CB;--footer-bg:transparent;--amber:#85570C;--amber-bg:#F8F1E1;--card-shadow:none;--side:clamp(16px,3vw,40px);font-weight:400;-webkit-font-smoothing:antialiased}
+.app.dark{--bg:#0F0F10;--surface:#161617;--ink:#EDEDEA;--mute:#A3A39F;--line:#29292B;--green:#7ED492;--green-dark:#7ED492;--tint:#1F1F21;--primary:#EDEDEA;--on-primary:#0F0F10;--selected-line:#3A3A3D;--amber:#E0B25C;--amber-bg:#2A2416;--footer-bg:transparent}
+.app{grid-template-columns:minmax(0,1fr)}
+.app ::selection{background:var(--ink);color:var(--bg)}
+
+/* Controls */
+.app :is(button,input:not([type=file]),select){border-radius:8px}
+.app :is(button,a,input,select,textarea,summary):focus-visible{outline:2px solid var(--ink);outline-offset:2px}
+.app :is(button,.brand){transition:background-color .18s,border-color .18s,color .18s,opacity .18s}
+.app svg{stroke-width:1.6}
+.app .primary{background:var(--primary);color:var(--on-primary);font-size:13.5px;font-weight:600;border-radius:8px;letter-spacing:-.005em}
+.app .primary:hover:not(:disabled){background:var(--primary);opacity:.84}
+.app .outlined{border-radius:8px;font-size:13px;font-weight:600;padding:8px 14px}
+.app .outlined:hover:not(:disabled){border-color:var(--ink)}
+.app .quiet,.app .icon{border-radius:8px}
+.app .quiet:hover:not(:disabled),.app .icon:hover:not(:disabled){color:var(--ink);background:var(--tint)}
+.app h2{font-weight:450;letter-spacing:-.02em}
+.busy-ring{border-color:color-mix(in srgb,currentColor 28%,transparent);border-top-color:currentColor}
+.error{border-radius:8px}
+
+/* Header and footer */
+.top{height:64px;border-bottom:1px solid var(--line)}
+.brand{font-size:19px;font-weight:700;letter-spacing:-.03em}
+.brand>span:not(.logo):not(.brand-dot){font-weight:400}
+.logo{width:auto;height:auto;margin-right:9px;background:none;color:var(--green);border-radius:0}
+.top-actions{gap:6px}
+.sync-pill{border:0;background:none;padding:0 10px 0 0;font-size:12px;font-weight:500}
+.sync-dot{width:6px;height:6px}
+.footer{color:var(--mute);border-top:1px solid var(--line);font-size:11.5px}
+
+/* Create and unlock */
+.welcome.auth-stage{max-width:1120px;margin-inline:auto;gap:clamp(32px,7vw,96px);padding-block:clamp(40px,9vh,96px)}
+.auth-stage .intro,.welcome>.unlock-card{animation:cl-rise .7s cubic-bezier(.2,.7,.2,1) both}
+.welcome>.unlock-card{animation-delay:.1s}
+@keyframes cl-rise{from{opacity:0;translate:0 12px}}
+.auth-stage .eyebrow{font-size:11px;font-weight:600;letter-spacing:.14em;color:var(--mute)}
+.eyebrow>span{background:var(--green)}
+.auth-stage h1{font-size:clamp(40px,4.6vw,56px);font-weight:400;line-height:1.04;letter-spacing:-.035em;margin:24px 0}
+.auth-stage .lead{font-size:17px;line-height:1.6}
+.protection-label{margin:40px 0 0;font-size:11px;font-weight:600;letter-spacing:.14em}
+.protection-card{background:none;border:0;border-bottom:1px solid var(--line);border-radius:0;padding:20px 0}
+.protection-card strong{font-weight:600}
+.welcome.auth-stage>.unlock-card,.welcome>.unlock-card{border-radius:14px;box-shadow:none;padding:32px}
+.auth-stage .unlock-card h2,.unlock-card h2{font-size:28px;margin-top:14px}
+.unlock-card label{font-size:12px;font-weight:600;color:var(--mute)}
+.app .unlock-card input,.app .import-form input,.app .change-password input{border-radius:8px;font-size:14px;transition:border-color .18s,box-shadow .18s}
+.app :is(.unlock-card,.import-form,.change-password) input:focus-visible{outline:none;border-color:var(--ink);box-shadow:0 0 0 3px color-mix(in srgb,var(--ink) 10%,transparent)}
+.auth-stage .username-form button{border-radius:8px}
+.auth-stage .unlock,.unlock{justify-content:center;min-height:48px}
+.username-chip{background:none;padding:0;color:var(--mute);font-size:12.5px;font-weight:500}
+.passphrase-suggestion{border-radius:8px;border-color:var(--line);background:var(--bg)}
+.passphrase-suggestion .quiet{color:var(--ink);font-weight:600}
+.strength-bars i{height:3px;border-radius:2px}
+
+/* Workspace: sidebar */
+.workspace{gap:clamp(24px,3vw,44px);padding-block:28px}
+.workspace>*{animation:cl-rise .6s cubic-bezier(.2,.7,.2,1) both}
+.workspace>.editor{animation-delay:.08s}
+.workspace aside{width:292px;flex-basis:292px}
+.sidebar-heading{align-items:baseline;margin-bottom:18px}
+.sidebar-heading h2{font-size:26px;margin-top:6px}
+.count{background:none;border:0;padding:0;color:var(--mute);font-size:12.5px;font-weight:500}
+.new{height:44px;margin-bottom:12px}
+.search{height:44px;border-radius:8px;background:transparent;transition:border-color .18s}
+.search:focus-within{border-color:var(--ink)}
+.app .search input{outline:none;border-radius:0}
+.search kbd{font-family:inherit;border-radius:4px}
+.app #tag-filter{border-radius:8px!important;padding:0 8px!important;font-size:13px;background:transparent!important}
+.recent-label{font-size:10.5px;font-weight:600;letter-spacing:.14em;margin:24px 0 8px}
+.note-list{padding:0 0 14px}
+.note-row{border-radius:8px;min-height:0;padding:11px 12px;margin-bottom:2px;border:0}
+.note-row .note-icon{display:none}
+.note-row strong{font-size:14px;font-weight:600;margin-bottom:2px}
+.note-row span{font-size:12.5px}
+.note-list button.note-row:hover:not(:disabled){background:var(--tint)}
+.note-row.selected{background:var(--tint);box-shadow:none}
+.notes-grid .note-row{border:1px solid var(--line)}
+.view-all{color:var(--ink)}
+.vault-health{background:none;border:0;border-top:1px solid var(--line);border-radius:0;padding:18px 0 0;margin:14px 0 6px}
+.health-heading h3{font-size:13px;font-weight:600}
+.health-progress{height:3px;margin:14px 0}
+.vault-health ul{gap:9px}
+.vault-health li{font-size:13px;font-weight:400}
+.vault-health .quiet{color:var(--ink);font-weight:600;text-decoration:underline;text-underline-offset:3px}
+.backup-tools button{font-weight:500;font-size:13px}
+.backup-notice{border-radius:8px}
+
+/* Workspace: editor */
+.editor{border-radius:12px}
+.editor-bar{padding:10px 14px 10px 22px}
+.save-status{font-size:12px;font-weight:600}
+.save{padding:10px 16px}
+.paper{padding:44px max(28px,calc((100% - 720px)/2)) 32px}
+.paper .note-title{font-size:38px;font-weight:450;letter-spacing:-.025em}
+.app .paper :is(.note-title,textarea):focus-visible{outline:none}
+.paper textarea{font-size:16.5px;line-height:1.8;margin-top:16px}
+.paper [aria-label="Markdown preview"]{font-size:16.5px;line-height:1.8}
+.pinned-chip{border-radius:8px}
+.app .tag-chip,.app .tag-input{border-radius:8px}
+.app .tag-input:focus-visible{outline:none;border-color:var(--ink);border-style:solid}
+.preview-switch{border:0;border-radius:9px;padding:3px;gap:2px}
+.app .preview-switch .quiet{border-radius:7px;min-height:32px;padding:4px 14px;font-weight:600;font-size:12.5px}
+.app .preview-switch .quiet:hover:not(:disabled){background:none}
+.app .preview-switch .quiet:is([aria-pressed=true],[aria-selected=true]){background:var(--surface);box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.attachment-tools{border:1px dashed var(--selected-line);border-radius:10px;padding:14px 16px}
+.app.dark .attachment-tools{border-color:var(--selected-line)}
+.attachment{border-radius:8px}
+.editor-footer{padding:12px 22px}
+.change-password{border-radius:10px}
+.notes-dialog{border-radius:14px;box-shadow:0 24px 70px -20px rgba(0,0,0,.35)}
+
+@media(max-width:859px){.top{height:auto;min-height:64px;padding-block:8px}.paper{padding:24px 20px}.paper .note-title{font-size:32px}.workspace aside{width:100%;flex-basis:auto}.editor-bar{padding:10px 14px}}
+@media(max-width:480px){.top{min-height:60px;gap:0 4px}.top-actions{display:contents}.brand{flex:1}.sync-pill{order:5;flex:1 1 auto;padding:0;min-width:0}.top-actions>.quiet{order:6;padding:8px 6px;font-size:12.5px}.top-actions .lock-button{margin-left:0}.paper .note-title{font-size:30px}.welcome.auth-stage>.unlock-card,.welcome>.unlock-card{padding:24px 20px}.auth-stage h1{font-size:40px}}
+
+/* Collapsible vault health, and selecting notes in the All notes dialog */
+.health-heading h3{margin:0}
+.vault-health ul[hidden]{display:none}
+.app .health-toggle{min-height:32px;padding:0;gap:6px;border:0;background:none;color:var(--ink);font-size:13px;font-weight:600}
+.health-toggle svg{color:var(--mute);transition:rotate .2s}
+.health-toggle[aria-expanded=false] svg{rotate:-90deg}
+.vault-health:has(.health-toggle[aria-expanded=false]) .health-progress{margin-bottom:4px}
+.notes-actions{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-top:12px;min-height:44px}
+.notes-picked{margin-right:auto;font-size:13px;font-weight:600}
+.app .notes-actions .quiet{font-size:13px;padding:8px 10px}
+.app .outlined.danger{color:var(--danger);border-color:color-mix(in srgb,var(--danger) 35%,var(--line))}
+.app .outlined.danger:hover:not(:disabled){border-color:var(--danger);background:color-mix(in srgb,var(--danger) 7%,transparent)}
+.pick-box{display:grid;place-items:center;flex:0 0 18px;width:18px;height:18px;align-self:flex-start;margin-top:2px;border:1.5px solid var(--selected-line);border-radius:5px;color:var(--on-primary)}
+.notes-grid .note-row.picked{border-color:var(--ink);background:var(--tint)}
+.note-row.picked .pick-box{background:var(--primary);border-color:var(--primary)}

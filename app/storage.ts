@@ -3,7 +3,7 @@ import { normalizeNotes, noteTimestamp, lastSyncedSnapshot, type SyncedSnapshot 
 import { normalizeUsername, validUsername } from '../lib/sync-contract';
 
 import {
-  decodeBase64, decryptBytes, derive, encodeBase64, encryptBytes, salt, unseal, unlockDataKey, importDataKey, wrapDataKey, rewrapPassword, rewrapRecovery, type Credential, type VaultAccess, type KeyEnvelope,
+  decodeBase64, decryptBytes, derive, encodeBase64, encryptBytes, salt, unseal, unlockDataKey, importDataKey, wrapDataKey, rewrapPassword, type Credential, type VaultAccess, type KeyEnvelope,
 } from './crypto';
 
 export const STORAGE_FORMAT_VERSION = 1;

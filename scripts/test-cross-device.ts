@@ -8,6 +8,7 @@ import {findCloud, downloadCloud, writeCloud, sameNotebook} from '../app/cloud-c
 import {installCloudNotebook, readHeader, listNotes, listAttachments, replaceNotebook} from '../app/storage';
 import {derive, salt, seal} from '../app/crypto';
 import {openCloud, deriveWriteToken} from '../app/sync-crypto';
+import {normalizeNotes} from '../app/merge-notebooks';
 
 const password = 'Cross-device! notebook password 982';
 const notes = [{id:'one',title:'A private note',text:'Device A',attachments:[{id:'file',name:'test.txt',type:'text/plain',size:2,dataUrl:'data:text/plain;base64,aGk='}]}];
@@ -35,7 +36,7 @@ const oldKey=rows.get('friend')!.blobKey, legacyKey='vaults_micro_existing-uuid'
 objects.set(legacyKey,objects.get(oldKey)!);objects.delete(oldKey);rows.get('friend')!.blobKey=legacyKey;
 const beforeReads=blobReads;assert(await findCloud('Friend',true));assert.equal(blobReads,beforeReads,'existence check does not download ciphertext');
 const snapshotBefore=JSON.stringify([...objects]);
-await assert.rejects(()=>writeCloud('Friend','another long password',notes,0),/newer version/);
+await assert.rejects(()=>writeCloud('Friend','another long password',notes,0),/Cloud changed again/);
 assert.equal(JSON.stringify([...objects]),snapshotBefore);assert.equal(rows.get('friend')!.version,1);
 
 // Fresh browser: authentication happens before any IndexedDB operation.
@@ -53,7 +54,7 @@ assert.equal((await listNotes('friend',password)).length,1,'failed duplicate ins
 const changed=[{...notes[0],text:'Device B saved'}];
 await replaceNotebook('friend',password,changed);
 assert.equal(await writeCloud('friend',password,changed,pulled.snapshot.version,pulled.snapshot.cryptoUsername),2);
-await assert.rejects(()=>writeCloud('friend',password,notes,1),/newer version/);
+await assert.rejects(()=>writeCloud('friend',password,notes,1),/Cloud changed again/);
 assert.equal((await downloadCloud('friend',password)).notes[0].text,'Device B saved');
 assert(sameNotebook([{id:'x',title:'',text:''}],[{id:'x',title:'',text:'',attachments:[]}]));
 
@@ -70,7 +71,7 @@ failPut=true;await assert.rejects(()=>writeCloud('fail-put',password,notes,0));a
 ambiguousCommit=true;assert.equal(await writeCloud('lost-response',password,notes,0),1);assert(objects.has(rows.get('lost-response')!.blobKey));ambiguousCommit=false;
 
 const s=salt();const legacy=await seal(notes,await derive(password,s),s);
-assert.deepEqual(await openCloud(legacy,password,'friend'),notes);
+assert.deepEqual(await openCloud(legacy,password,'friend'),normalizeNotes(notes));
 await assert.rejects(()=>openCloud(legacy,'incorrect','friend'));
 assert.equal(await deriveWriteToken(password,'friend'),await deriveWriteToken(password,'friend'));
 

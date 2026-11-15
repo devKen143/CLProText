@@ -5,6 +5,7 @@ import {createVaultHandler, hashToken, equalHash, type VaultRow} from '../lib/va
 import {MAX_BLOB_BYTES, validUsername} from '../lib/sync-contract';
 import {deriveWriteToken, sealCloud, openCloud, WRITE_TOKEN_CONTEXT} from '../app/sync-crypto';
 import {encodeBase64} from '../app/crypto';
+import {normalizeNotes} from '../app/merge-notebooks';
 
 const password='Test-only! Long notebook password 473';
 const token=await deriveWriteToken(password,'alice');
@@ -19,7 +20,7 @@ assert.notEqual(token,encodeBase64(new Uint8Array(encryptionBits)));
 assert.equal(validUsername(' ALICE '),false);assert.equal(validUsername('../alice'),false);
 const notes=[{id:'note-1',title:'Secret title',text:'Private notes',attachments:[{id:'file-1',name:'confidential.txt',type:'text/plain',size:5,dataUrl:'data:text/plain;base64,aGVsbG8='}]}];
 const blob=await sealCloud(notes,password,'alice');
-assert.deepEqual(await openCloud(blob,password,'alice'),notes);
+assert.deepEqual(await openCloud(blob,password,'alice'),normalizeNotes(notes));
 assert(!JSON.stringify(blob).includes('confidential')); assert(!JSON.stringify(blob).includes('Secret title'));
 await assert.rejects(()=>openCloud(blob,'wrong password','alice'));
 await assert.rejects(()=>openCloud(blob,password,'bob'));
@@ -31,7 +32,7 @@ for(let i=0;i<large.length;i+=65536) crypto.getRandomValues(large.subarray(i,Mat
 const attached=[{id:'large',title:'Large attachment',text:'',attachments:[{id:'binary',name:'five-mib.bin',type:'application/octet-stream',size:large.length,dataUrl:'data:application/octet-stream;base64,'+Buffer.from(large).toString('base64')}]}];
 const largeBlob=await sealCloud(attached,password,'alice');
 assert(Buffer.byteLength(JSON.stringify(largeBlob))<=MAX_BLOB_BYTES);
-assert.deepEqual(await openCloud(largeBlob,password,'alice'),attached);
+assert.deepEqual(await openCloud(largeBlob,password,'alice'),normalizeNotes(attached));
 
 const rows=new Map<string,VaultRow>(), objects=new Map<string,string>();
 let failPut=false;
@@ -85,7 +86,7 @@ if(process.env.SYNC_TEST_ORIGIN) {
  const username='qa-'+crypto.randomUUID().slice(0,8), writeToken=await deriveWriteToken(password,username), payload=await sealCloud(notes,password,username);
  const live=async(method:string,value?:unknown)=>fetch(`${origin.origin}/api/vault?username=${username}`,{method,headers:{'Content-Type':'application/json',Origin:origin.origin},body:value===undefined?undefined:JSON.stringify(value),signal:AbortSignal.timeout(10000)});
  const first=await live('PUT',{username,writeToken,expectedVersion:0,blob:payload});assert.equal(first.status,201,await first.text());
- const read=await live('GET');assert.equal(read.status,200);const saved=await read.json() as {blob:typeof payload;version:number};assert.equal(saved.version,1);assert.deepEqual(await openCloud(saved.blob,password,username),notes);
+ const read=await live('GET');assert.equal(read.status,200);const saved=await read.json() as {blob:typeof payload;version:number};assert.equal(saved.version,1);assert.deepEqual(await openCloud(saved.blob,password,username),normalizeNotes(notes));
  const races=await Promise.all([live('PUT',{username,writeToken,expectedVersion:1,blob:payload}),live('PUT',{username,writeToken,expectedVersion:1,blob:payload})]);assert.deepEqual(races.map(r=>r.status).sort(),[200,409]);
  assert.equal((await live('PUT',{username,writeToken:'A'.repeat(43)+'=',expectedVersion:2,blob:payload})).status,403);
  assert.equal((await live('DELETE',{username,writeToken,expectedVersion:2})).status,200);
